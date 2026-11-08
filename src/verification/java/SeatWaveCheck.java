@@ -2,8 +2,10 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.sql.Connection;
 import java.sql.DriverManager;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.regex.Pattern;
@@ -14,6 +16,8 @@ import static java.net.HttpURLConnection.*;
 public final class SeatWaveCheck {
     private static final String CHECK_DATABASE = "jdbc:h2:mem:seatwave-check";
     private static final int CONCURRENT_HOLDS = 24;
+    // Occupy every connection in the module’s default pool to exercise the fail-safe boundary.
+    private static final int DEFAULT_DATABASE_CONNECTIONS = 16;
     private static final int OVERSIZED_BYTES = 2048;
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
     private static final Pattern HOLD_ID = Pattern.compile("\"holdId\":\"([^\"]+)\"");
@@ -58,6 +62,19 @@ public final class SeatWaveCheck {
             long conflicts = outcomes.stream().filter(outcome -> outcome.statusCode() == HTTP_CONFLICT).count();
             if (holdsCreated != 1 || conflicts != CONCURRENT_HOLDS - 1) {
                 throw new AssertionError("Expected one winner, got " + holdsCreated + " holds and " + conflicts + " conflicts");
+            }
+            List<Connection> borrowedConnections = new ArrayList<>();
+            try {
+                for (int connectionIndex = 0; connectionIndex < DEFAULT_DATABASE_CONNECTIONS; connectionIndex++) {
+                    borrowedConnections.add(server.pool().borrow());
+                }
+                var refusal = send(client, base, "/events", null);
+                expect(HTTP_UNAVAILABLE, refusal);
+                if (!refusal.body().contains("busy, retry shortly")) {
+                    throw new AssertionError("Expected the connection pool saturation response");
+                }
+            } finally {
+                borrowedConnections.forEach(server.pool()::giveBack);
             }
             try (var database = DriverManager.getConnection(CHECK_DATABASE, "sa", "");
                  var statement = database.createStatement()) {
