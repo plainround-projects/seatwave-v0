@@ -1,0 +1,58 @@
+plugins {
+    id 'application'
+}
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+dependencies {
+    implementation 'com.github.sviperll:result4j:1.2.0'
+    runtimeOnly 'com.h2database:h2:2.5.252'
+}
+
+application {
+    mainClass = 'SeatWave'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs.add('-Xlint:all')
+}
+
+sourceSets {
+    verification {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+
+configurations {
+    verificationImplementation.extendsFrom implementation
+    verificationRuntimeOnly.extendsFrom runtimeOnly
+}
+
+['load': 'LoadGenerator', 'findKnee': 'KneeFinder', 'scaleDecision': 'ScaleDecision'].each { taskName, entryPoint ->
+    tasks.register(taskName, JavaExec) {
+        group = 'application'
+        classpath = sourceSets.main.runtimeClasspath
+        mainClass = entryPoint
+    }
+}
+
+tasks.register('verifySeatWave', JavaExec) {
+    group = 'verification'
+    description = 'Run the booking and concurrency checks on an isolated server.'
+    dependsOn tasks.verificationClasses
+    classpath = sourceSets.verification.runtimeClasspath
+    mainClass = 'SeatWaveCheck'
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifySeatWave')
+}
